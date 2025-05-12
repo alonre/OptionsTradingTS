@@ -25,7 +25,7 @@ export interface OptionChainLink {
     p_Bid?: string;
     c_Bid?: string;
     expiryDate?: string;
-
+    expirygroup?: string;
 }
 
 export interface OptionAnalysisResult {
@@ -34,6 +34,7 @@ export interface OptionAnalysisResult {
     strikePrice: number;
     expDateStr: string;
     expDate:Date,
+    daysToExpiration: number;
     bid: number;
     percentageFromStrike: number;
     ROI: number;

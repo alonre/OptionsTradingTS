@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import fs from "fs"
+import { toZonedTime } from 'date-fns-tz';
 
 import {
   OptionChainResponse,
@@ -8,6 +9,16 @@ import {
   OptionType,
   PutInputData, OptionAnalysisResult
 } from './types';
+
+/**
+ * Safely parses a string that might contain commas as a float.
+ * @param value The string to parse.
+ * @returns The parsed float value.
+ */
+const safeParseFloat = (value: string): number => {
+  if (!value || value === '--') return 0;
+  return parseFloat(value.replace(/,/g, ''));
+};
 
 const DAYS_IN_YEAR = 365;
 
@@ -24,7 +35,7 @@ export const calculateOptionsROI = (
   optionPremium: number,
   targetPrice: number,
   daysToExp: number,
-  leverage: number = 0.1,
+  leverage: number = 1,
   commission: number = 0
 ): number => {
   const cost: number = targetPrice * leverage + commission;
@@ -61,15 +72,15 @@ const formatWithSignColor = (value: number): string => {
  */
 export const printStockChains = (chain: OptionAnalysisResult[]): void => {
   // Header
-  console.log(chalk.bold('Ticker  | Current  | Strike |  Exp Date  |  Bid  |   Diff   | ROI'));
+  console.log(chalk.bold('Ticker  | Current  | Strike |  Exp Date  | D2Exp |  Bid  |   Diff   | ROI (Yearly)'));
   console.log('-'.repeat(80)); // Adjust the repeat count based on your console width
 
   // Rows
-  chain.forEach(({ ticker, currentPrice, strikePrice, expDateStr, bid, percentageFromStrike, ROI }) => {
+  chain.forEach(({ ticker, currentPrice, strikePrice, expDateStr, daysToExpiration, bid, percentageFromStrike, ROI }) => {
     const diffFormatted = formatWithSignColor(percentageFromStrike) + '%';
     const roiFormatted = formatWithSignColor(ROI) + '%';
     console.log(
-        `${ticker.padEnd(7)} | ${currentPrice.toString().padEnd(8)} | ${strikePrice.toString().padEnd(6)} | ${expDateStr.padEnd(10)} | ${bid.toString().padEnd(5)} | ${diffFormatted.padEnd(8)} | ${roiFormatted}`
+        `${ticker.padEnd(7)} | ${currentPrice.toString().padEnd(8)} | ${strikePrice.toString().padEnd(6)} | ${expDateStr.padEnd(10)} | ${daysToExpiration.toString().padEnd(5)} | ${bid.toString().padEnd(5)} | ${diffFormatted.padEnd(8)} | ${roiFormatted}`
     );
   });
 };
@@ -145,6 +156,7 @@ export const getOptionQuote = async (
   try {
     const todayStr: string = new Date().toISOString().split('T')[0];
     const url: string = `https://api.nasdaq.com/api/quote/${ticker}/option-chain?assetclass=stocks&fromdate=${todayStr}&todate=${maxExpDate}&excode=oprac&callput=${Optiontype}&money=out&type=all`;
+    console.log(chalk.green(`Fetching options for ${ticker} at ${url}...`));
     const rawResult = await fetch(url, {
       headers: {
         "accept-language": "*",
@@ -154,7 +166,7 @@ export const getOptionQuote = async (
 
     const res: OptionChainResponse = await rawResult.json();
     const rows = res.data?.table?.rows || [];
-    const currentPrice = res.data?.lastTrade ? parseFloat(res.data.lastTrade.split('$')[1].split('(')[0].trim()) : 0;
+    const currentPrice = res.data?.lastTrade ? safeParseFloat(res.data.lastTrade.split('$')[1].split('(')[0].trim()) : 0;
 
     if (rows.length == 0)  throw new Error(`no results for ${ticker}!`);
     console.log(chalk.green(`current price for ${ticker} is ${currentPrice}, got ${rows.length} rows`));
@@ -193,11 +205,18 @@ export const filterOptionsByStrikePrice = (
     maxStrikePrice: string | number,
     Optiontype: OptionType
 ): OptionChainLink[] => {
-  return optionsChain.filter((row) =>
-      Optiontype === "put" ?
-          (parseFloat(row.strike) < parseFloat(maxStrikePrice.toString())) && (row.p_Bid !== '--') :
-          (parseFloat(row.strike) > parseFloat(maxStrikePrice.toString())) && (row.c_Bid !== '--')
-  );
+  const maxStrikePriceValue = typeof maxStrikePrice === 'string' ? 
+    safeParseFloat(maxStrikePrice) : maxStrikePrice;
+    
+  return optionsChain.filter((row) => {
+    if (!row.strike) return false;
+    
+    const strikeValue = safeParseFloat(row.strike);
+    
+    return Optiontype === "put" ?
+      (strikeValue < maxStrikePriceValue) && (row.p_Bid !== '--') :
+      (strikeValue > maxStrikePriceValue) && (row.c_Bid !== '--');
+  });
 }
 
 /**
@@ -219,30 +238,34 @@ export const filterOptionsByStrikePrice = (
 export const evaluatePutOptionsPerformance = (
     chain: OptionChainLink[],
     currentPrice: number,
-    ticker: string
+    ticker: string,
+    expiryGroups: string[]
 ): OptionAnalysisResult[] => {
-  const millisecondsInDay = 24 * 3600 * 1000;
-  const today = new Date();
+  const MIN_ROI_PERCENTAGE = 15; // Minimum ROI threshold
 
   const results = chain.map(chainLink => {
-    const optionPremiumBid = parseFloat(chainLink.p_Bid);
-    const strikePrice = parseFloat(chainLink.strike);
-    const expDate = convertStringToDate(chainLink.expiryDate);
+    const optionPremiumBid = safeParseFloat(chainLink.p_Bid);
+    const strikePrice = safeParseFloat(chainLink.strike);
+    const expDate = new Date(findExpiryGroupStartingWith(chainLink.expiryDate, expiryGroups));
     const expDateStr = expDate.toISOString().split('T')[0];
-    const daysToExpiration = Math.ceil((expDate.getTime() - today.getTime()) / millisecondsInDay);
+    const daysToExpiration = daysUntil(expDate);
     const percentageFromStrike = calculatePercentageChange(strikePrice, currentPrice);
-    const ROI = calculateOptionsROI(optionPremiumBid, strikePrice, daysToExpiration);
+    // const ROI = calculateOptionsROI(optionPremiumBid, strikePrice, daysToExpiration);
+    const ROI = calculateAPY(strikePrice, optionPremiumBid, daysToExpiration);
+    
     return {
       ticker,
       currentPrice,
       strikePrice,
       expDateStr,
       expDate,
+      daysToExpiration,
       bid: optionPremiumBid,
       percentageFromStrike,
       ROI
     };
-  })
+  }).filter(result => result.ROI >= MIN_ROI_PERCENTAGE); // Filter out options with less than minimum ROI
+
   return results;
 };
 
@@ -268,4 +291,94 @@ export const filterCherries = (putOptions: OptionAnalysisResult[]): OptionAnalys
         bid > previousOption.bid
     );
   });
+};
+
+
+/**
+ * Returns a unique list of expiration dates from an options chain.
+ *
+ * @param optionsChain The options chain to analyze.
+ * @returns An array of unique expiration dates, excluding empty strings and null values.
+ */
+export const getUniqueExpiryGroups = (optionsChain: OptionChainLink[]): string[] => {
+  const expiryGroups = optionsChain
+    .map(option => option.expirygroup) // Assuming 'expirygroup' is a property of OptionChainLink
+    .filter(expiry => expiry && expiry.trim() !== ''); // Filter out empty strings
+
+  return Array.from(new Set(expiryGroups)); // Return unique values
+};
+
+/**
+ * Finds the first expiry group that starts with the given date string.
+ *
+ * @param dateStr The date string to search for.
+ * @param expiryGroups The list of expiry groups to search in.
+ * @returns The first expiry group that starts with the given date string, or undefined if not found.
+ */
+export const findExpiryGroupStartingWith = (dateStr: string, expiryGroups: string[]): string | undefined => {
+  const monthMap: { [key: string]: string } = {
+    Jan: 'January',
+    Feb: 'February',
+    Mar: 'March',
+    Apr: 'April',
+    May: 'May',
+    Jun: 'June',
+    Jul: 'July',
+    Aug: 'August',
+    Sep: 'September',
+    Oct: 'October',
+    Nov: 'November',
+    Dec: 'December',
+  };
+
+  // Split the dateStr to get the month and day
+  const [shortMonth, dayNum] = dateStr.split(' ');
+  const longMonth = monthMap[shortMonth]; // Convert to long month name
+
+  if (!longMonth) return undefined; // Return undefined if month is invalid
+
+  const formattedDateStr = `${longMonth} ${dayNum}`; // Create the formatted string
+
+  return expiryGroups.find(expiry => expiry.startsWith(formattedDateStr));
+};
+
+/**
+ * Calculates the number of days until the given date.
+ *
+ * @param date The date to calculate the days until.
+ * @returns The number of days until the given date, normalized to NYC timezone.
+ */
+export const daysUntil = (date: Date): number => {
+  const millisecondsInADay = 24 * 60 * 60 * 1000; // Number of milliseconds in a day
+  const nycTimeZone = 'America/New_York';
+  
+  // Convert both dates to NYC timezone for consistent calculation
+  const nycDate = toZonedTime(date, nycTimeZone);
+  const nycNow = toZonedTime(new Date(), nycTimeZone);
+  
+  // Calculate the difference in days
+  const differenceInMilliseconds = nycDate.getTime() - nycNow.getTime();
+  const days = Math.ceil(differenceInMilliseconds / millisecondsInADay);
+  
+  // Return at least 1 day for same-day or past expirations to avoid the error
+  return Math.max(1, days);
+};
+
+/**
+ * Calculates the Annualized Percentage Yield (APY) for a given strike price, option premium, and days to expiration.
+ *
+ * @param strikePrice The strike price of the option.
+ * @param optionPremium The premium you get for selling the option.
+ * @param daysToExpiration The number of days until the option expires.
+ * @returns The Annualized Percentage Yield (APY) as a percentage.
+ */
+export const calculateAPY = (strikePrice: number, optionPremium: number, daysToExpiration: number): number => {
+  if (daysToExpiration <= 0) {
+    throw new Error("Days to expiration must be greater than zero.");
+  }
+  
+  const gain = optionPremium / strikePrice; // Calculate gain as absolute percentage
+  const apy = (gain / daysToExpiration) * DAYS_IN_YEAR; // Normalize to yearly interest value
+  
+  return apy * 100;
 };
