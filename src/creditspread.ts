@@ -6,6 +6,7 @@ import {
     parseCreditSpreadParams,
     getUniqueExpiryGroups,
 } from "./utils.js";
+import chalk from 'chalk';
 import {OptionAnalysisResult} from "./types";
 
 // Configuration
@@ -57,27 +58,62 @@ resultArr.forEach(result => {
     }
 });
 
-// Convert back to array and sort by annualized ROI
+// Convert back to array and sort by ticker first, then by annualized ROI within each ticker group
 const filteredResults = Array.from(bestROIByStrike.values())
-    .sort((a, b) => b.annualizedROI - a.annualizedROI);
+    .sort((a, b) => {
+        // First sort by ticker
+        if (a.ticker !== b.ticker) {
+            return a.ticker.localeCompare(b.ticker);
+        }
+        // Then by annualized ROI (highest first) within each ticker
+        return b.annualizedROI - a.annualizedROI;
+    });
 
-// Print results in a formatted table
-console.log("\nTicker | Current | Strike | Long Strike | Exp Date | D2Exp | Net Credit | Width % | ROI | Annual ROI");
-console.log("-".repeat(100));
-
+// Group results by ticker
+const resultsByTicker: { [key: string]: OptionAnalysisResult[] } = {};
 filteredResults.forEach(result => {
-    console.log(
-        `${result.ticker.padEnd(6)} | ` +
-        `${result.currentPrice.toFixed(2).padEnd(7)} | ` +
-        `${result.strikePrice.toFixed(2).padEnd(6)} | ` +
-        `${(result.longStrike || 0).toFixed(2).padEnd(10)} | ` +
-        `${result.expDateStr.padEnd(8)} | ` +
-        `${result.daysToExpiration.toString().padEnd(5)} | ` +
-        `${result.bid.toFixed(4).padEnd(9)} | ` +
-        `${((result.spreadWidthPercent || 0) * 100).toFixed(1).padEnd(6)}% | ` +
-        `${result.ROI.toFixed(2).padEnd(5)}% | ` +
-        `${(result.annualizedROI || 0).toFixed(2)}%`
-    );
+    if (!resultsByTicker[result.ticker]) {
+        resultsByTicker[result.ticker] = [];
+    }
+    resultsByTicker[result.ticker].push(result);
 });
 
-console.log(`\nFound ${filteredResults.length} optimal credit spread opportunities after filtering for best ROI per strike price.`);
+// Print results in a formatted table, grouped by ticker with alternating colors
+console.log("\nOptimal Credit Spread Opportunities\n");
+
+let totalOpportunities = 0;
+let isFirstTicker = true;
+
+Object.keys(resultsByTicker).forEach(ticker => {
+    const results = resultsByTicker[ticker];
+    totalOpportunities += results.length;
+    
+    // Add spacing between ticker groups except for the first one
+    if (!isFirstTicker) {
+        console.log();
+    } else {
+        isFirstTicker = false;
+    }
+    
+    // Print ticker header with color
+    console.log(chalk.bold.blue(`${ticker} (${results.length} opportunities)`));
+    console.log(chalk.bold("Current | Strike | Long Strike | Exp Date | D2Exp | Net Credit | Width % | ROI | Annual ROI"));
+    console.log(chalk.gray("-".repeat(100)));
+    
+    // Print results for this ticker
+    results.forEach(result => {
+        console.log(
+            `${result.currentPrice.toFixed(2).padEnd(7)} | ` +
+            `${result.strikePrice.toFixed(2).padEnd(6)} | ` +
+            `${(result.longStrike || 0).toFixed(2).padEnd(10)} | ` +
+            `${result.expDateStr.padEnd(8)} | ` +
+            `${result.daysToExpiration.toString().padEnd(5)} | ` +
+            `${chalk.green(result.bid.toFixed(4).padEnd(9))} | ` +
+            `${((result.spreadWidthPercent || 0) * 100).toFixed(1).padEnd(6)}% | ` +
+            `${chalk.yellow(result.ROI.toFixed(2) + '%').padEnd(6)} | ` +
+            `${chalk.cyan((result.annualizedROI || 0).toFixed(2))}%`
+        );
+    });
+});
+
+console.log(`\nFound ${totalOpportunities} optimal credit spread opportunities across ${Object.keys(resultsByTicker).length} stocks.`);
