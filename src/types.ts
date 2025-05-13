@@ -24,6 +24,8 @@ export interface OptionChainLink {
     strike?: string;
     p_Bid?: string;
     c_Bid?: string;
+    p_Ask?: string;
+    c_Ask?: string;
     expiryDate?: string;
     expirygroup?: string;
 }

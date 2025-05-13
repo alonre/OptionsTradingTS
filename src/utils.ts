@@ -470,7 +470,8 @@ export const evaluateCallCreditSpreadPerformance = (
       if (!longOption) continue; // Skip if no suitable long option found
       
       const longStrike = safeParseFloat(longOption.strike || '0');
-      const longAsk = safeParseFloat(longOption.c_Bid || '0') * 1.1; // Estimate ask as 10% higher than bid
+      // Use actual ask price from API if available, otherwise fall back to a reasonable estimate
+      const longAsk = safeParseFloat(longOption.c_Ask || '0') || safeParseFloat(longOption.c_Bid || '0') * 1.1;
       
       if (longAsk <= 0) continue; // Skip if no valid ask for long option
       
@@ -487,8 +488,10 @@ export const evaluateCallCreditSpreadPerformance = (
       // Calculate ROI (net credit / max risk)
       const roi = (netCredit / maxRisk) * 100;
       
-      // Calculate annualized ROI
-      const annualizedROI = (roi / daysToExpiration) * 365;
+      // Calculate annualized ROI using compound interest formula
+      // Formula: (1 + r)^(365/t) - 1, where r is the ROI as a decimal and t is days to expiration
+      const roiDecimal = roi / 100; // Convert percentage to decimal
+      const annualizedROI = (Math.pow(1 + roiDecimal, 365 / daysToExpiration) - 1) * 100;
       
       // Skip if annualized ROI is below threshold
       if (annualizedROI < minAnnualizedROI) continue;
