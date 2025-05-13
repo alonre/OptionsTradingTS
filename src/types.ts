@@ -33,11 +33,14 @@ export interface OptionAnalysisResult {
     currentPrice: number;
     strikePrice: number;
     expDateStr: string;
-    expDate:Date,
+    expDate: Date;
     daysToExpiration: number;
     bid: number;
     percentageFromStrike: number;
     ROI: number;
+    annualizedROI?: number;
+    spreadWidthPercent?: number;
+    longStrike?: number;
 }
 
 

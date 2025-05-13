@@ -179,43 +179,46 @@ export const getOptionQuote = async (
 };
 
 /**
- * Calculates the maximum strike price based on an absolute value or a percentage of the current price.
- * If `maxPrice` is 1 or greater, it's treated as an absolute value. If it's less than 1, it's treated as a percentage of `currentPrice`.
+ * Calculates the strike price threshold based on a percentage of the current price or an absolute value.
+ * For values >= 1, the function treats them as a percentage multiplier of the current price (e.g., 1.4 means 140% of current price).
+ * For values < 1, the function treats them as a direct percentage of the current price (e.g., 0.7 means 70% of current price).
  *
- * @param maxPrice The maximum price or percentage for the strike price.
+ * @param priceMultiplier The price multiplier or percentage for the strike price.
  * @param currentPrice The current price of the stock.
- * @returns The calculated absolute maximum strike price.
+ * @returns The calculated strike price threshold.
  */
-export const calculateMaxStrikePrice = (maxPrice: number, currentPrice: number): number => {
-  if (maxPrice >= 1) return maxPrice; // Treat as absolute price
-  return currentPrice * maxPrice; // Treat as percentage
+export const calculateMaxStrikePrice = (priceMultiplier: number, currentPrice: number): number => {
+  if (priceMultiplier >= 1) return currentPrice * priceMultiplier; // Treat as percentage multiplier (e.g., 1.4 = 140%)
+  return currentPrice * priceMultiplier; // Treat as direct percentage (e.g., 0.7 = 70%)
 }
 
 
 /**
- * Filters a stock option chain based on option type and maximum strike price, including only options with bid values.
+ * Filters a stock option chain based on option type and strike price threshold, including only options with bid values.
  *
  * @param stockChain An array of stock option chain rows.
  * @param Optiontype The type of options to filter by ("put" or "call").
- * @param maxStrikePrice The maximum strike price for filtering options.
+ * @param strikeThreshold For puts: the maximum strike price; For calls: the minimum strike price.
  * @returns An array of stock chain rows filtered by the specified criteria.
  */
 export const filterOptionsByStrikePrice = (
     optionsChain: OptionChainLink[],
-    maxStrikePrice: string | number,
+    strikeThreshold: string | number,
     Optiontype: OptionType
 ): OptionChainLink[] => {
-  const maxStrikePriceValue = typeof maxStrikePrice === 'string' ? 
-    safeParseFloat(maxStrikePrice) : maxStrikePrice;
+  const thresholdValue = typeof strikeThreshold === 'string' ? 
+    safeParseFloat(strikeThreshold) : strikeThreshold;
     
-  return optionsChain.filter((row) => {
+  return optionsChain.filter((row: OptionChainLink) => {
     if (!row.strike) return false;
     
     const strikeValue = safeParseFloat(row.strike);
     
     return Optiontype === "put" ?
-      (strikeValue < maxStrikePriceValue) && (row.p_Bid !== '--') :
-      (strikeValue > maxStrikePriceValue) && (row.c_Bid !== '--');
+      // For puts: filter strikes below the threshold (which is the max strike price)
+      (strikeValue < thresholdValue) && (row.p_Bid !== '--') :
+      // For calls: filter strikes above the threshold (which is the min strike price)
+      (strikeValue > thresholdValue) && (row.c_Bid !== '--');
   });
 }
 
@@ -362,6 +365,203 @@ export const daysUntil = (date: Date): number => {
   
   // Return at least 1 day for same-day or past expirations to avoid the error
   return Math.max(1, days);
+};
+
+/**
+ * Parses parameters for credit spread options from a text file.
+ * Each line in the file should contain a stock symbol and a minimum strike price, separated by a comma.
+ * (e.g., "AAPL,1.2" where 1.2 means 120% of current price)
+ * 
+ * @returns An array of objects, each with a 'symbol' (string) and 'minStrikePrice' (number).
+ */
+export const parseCreditSpreadParams = (): { symbol: string, minStrikePrice: number }[] => {
+  try {
+    const data = fs.readFileSync('./data/creditspread.txt', 'utf8');
+    const lines = data.split('\n').filter(line => line.trim() !== '');
+    
+    return lines.map(line => {
+      const [symbol, minStrikePrice] = line.split(',');
+      return {
+        symbol,
+        minStrikePrice: parseFloat(minStrikePrice)
+      };
+    });
+  } catch (error) {
+    console.error('Error reading credit spread parameters:', error);
+    return [];
+  }
+};
+
+/**
+ * Evaluates the performance of call credit spread options from a given options chain.
+ * A call credit spread involves selling a call option at a lower strike price and buying a call option
+ * at a higher strike price with the same expiration date.
+ *
+ * @param chain The options chain to analyze.
+ * @param currentPrice The current price of the underlying stock.
+ * @param ticker The stock ticker symbol.
+ * @param expiryGroups The available expiration date groups.
+ * @param spreadWidthPercent The percentage width between the short and long options (e.g., 0.05 for 5%).
+ * @param minAnnualizedROI The minimum annualized ROI threshold (as a percentage).
+ * @returns An array of analyzed credit spread options.
+ */
+export const evaluateCallCreditSpreadPerformance = (
+  chain: OptionChainLink[],
+  currentPrice: number,
+  ticker: string,
+  expiryGroups: string[],
+  spreadWidthPercent: number,
+  minAnnualizedROI: number = 15
+): OptionAnalysisResult[] => {
+  const results: OptionAnalysisResult[] = [];
+  
+  // Group options by expiration date
+  const optionsByExpiry: { [key: string]: OptionChainLink[] } = {};
+  
+  chain.forEach(option => {
+    const expDateStr = option.expiryDate || '';
+    if (!optionsByExpiry[expDateStr]) {
+      optionsByExpiry[expDateStr] = [];
+    }
+    optionsByExpiry[expDateStr].push(option);
+  });
+  
+  // Process each expiration date group
+  Object.entries(optionsByExpiry).forEach(([expDateStr, options]) => {
+    // Sort options by strike price (ascending)
+    const sortedOptions = [...options].sort((a, b) => {
+      const strikeA = safeParseFloat(a.strike || '0');
+      const strikeB = safeParseFloat(b.strike || '0');
+      return strikeA - strikeB;
+    });
+    
+    // For each option, find a suitable long option to create a spread
+    for (let i = 0; i < sortedOptions.length - 1; i++) {
+      const shortOption = sortedOptions[i];
+      const shortStrike = safeParseFloat(shortOption.strike || '0');
+      const shortBid = safeParseFloat(shortOption.c_Bid || '0'); // Use c_Bid for call options
+      
+      if (shortBid <= 0) continue; // Skip if no bid for short option
+      
+      // Convert expiration date string to Date object
+      const expDate = convertStringToDate(expDateStr);
+      
+      // Calculate days to expiration
+      const daysToExpiration = daysUntil(expDate);
+      
+      // Calculate percentage from strike for the short option
+      const percentageFromStrike = calculatePercentageChange(shortStrike, currentPrice);
+      
+      // Calculate the target strike price for the long option (higher than short strike)
+      const targetLongStrike = shortStrike * (1 + spreadWidthPercent);
+      
+      // Find the closest strike price that is greater than or equal to the target
+      let longOption = null;
+      for (let j = i + 1; j < sortedOptions.length; j++) {
+        const potentialLongOption = sortedOptions[j];
+        const potentialLongStrike = safeParseFloat(potentialLongOption.strike || '0');
+        
+        if (potentialLongStrike >= targetLongStrike) {
+          longOption = potentialLongOption;
+          break;
+        }
+      }
+      
+      if (!longOption) continue; // Skip if no suitable long option found
+      
+      const longStrike = safeParseFloat(longOption.strike || '0');
+      const longAsk = safeParseFloat(longOption.c_Bid || '0') * 1.1; // Estimate ask as 10% higher than bid
+      
+      if (longAsk <= 0) continue; // Skip if no valid ask for long option
+      
+      // Calculate net credit received (short bid - long ask)
+      const netCredit = shortBid - longAsk;
+      
+      if (netCredit <= 0) continue; // Skip if no net credit (unprofitable spread)
+      
+      // Calculate max risk (difference between strikes - net credit)
+      const maxRisk = longStrike - shortStrike - netCredit;
+      
+      if (maxRisk <= 0) continue; // Skip if no risk (unlikely but possible)
+      
+      // Calculate ROI (net credit / max risk)
+      const roi = (netCredit / maxRisk) * 100;
+      
+      // Calculate annualized ROI
+      const annualizedROI = (roi / daysToExpiration) * 365;
+      
+      // Skip if annualized ROI is below threshold
+      if (annualizedROI < minAnnualizedROI) continue;
+      
+      results.push({
+        ticker,
+        currentPrice,
+        strikePrice: shortStrike, // Use short strike as the main strike price
+        expDateStr,
+        expDate,
+        daysToExpiration,
+        bid: netCredit, // Use net credit as the bid
+        percentageFromStrike,
+        ROI: roi,
+        annualizedROI,
+        spreadWidthPercent,
+        longStrike
+      });
+    }
+  });
+  
+  return results;
+};
+
+/**
+ * Tests multiple spread widths for call credit spreads and returns the optimal results.
+ *
+ * @param chain The options chain to analyze.
+ * @param currentPrice The current price of the underlying stock.
+ * @param ticker The stock ticker symbol.
+ * @param expiryGroups The available expiration date groups.
+ * @param minAnnualizedROI The minimum annualized ROI threshold (as a percentage).
+ * @returns An array of analyzed credit spread options with optimal spread widths, sorted by ROI.
+ */
+export const findOptimalCallCreditSpreads = (
+  chain: OptionChainLink[],
+  currentPrice: number,
+  ticker: string,
+  expiryGroups: string[],
+  minAnnualizedROI: number = 15
+): OptionAnalysisResult[] => {
+  // Test different spread widths
+  const spreadWidths = [0.01, 0.02, 0.03, 0.05, 0.07, 0.10, 0.15, 0.20];
+  let allResults: OptionAnalysisResult[] = [];
+  
+  // Evaluate each spread width
+  spreadWidths.forEach(spreadWidth => {
+    const results = evaluateCallCreditSpreadPerformance(
+      chain,
+      currentPrice,
+      ticker,
+      expiryGroups,
+      spreadWidth,
+      minAnnualizedROI
+    );
+    
+    allResults = [...allResults, ...results];
+  });
+  
+  // Deduplicate results by keeping only the best result (highest annualized ROI)
+  // for each unique combination of ticker, strike price, and expiration date
+  const uniqueResults = new Map<string, OptionAnalysisResult>();
+  
+  allResults.forEach(result => {
+    const key = `${result.ticker}-${result.strikePrice}-${result.expDateStr}`;
+    
+    if (!uniqueResults.has(key) || uniqueResults.get(key)!.annualizedROI < result.annualizedROI) {
+      uniqueResults.set(key, result);
+    }
+  });
+  
+  // Sort by annualized ROI (highest first)
+  return Array.from(uniqueResults.values()).sort((a, b) => b.annualizedROI - a.annualizedROI);
 };
 
 /**
