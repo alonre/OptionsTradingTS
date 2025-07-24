@@ -10,7 +10,7 @@ import chalk from 'chalk';
 import {OptionAnalysisResult} from "./types";
 
 // Configuration
-const MAX_DAYS_TO_EXP = 200;
+const MAX_DAYS_TO_EXP = 30;
 const MIN_ANNUALIZED_ROI = 15; // 15% minimum annualized ROI
 const CHEERIES_ONLY = false;
 
@@ -97,7 +97,7 @@ Object.keys(resultsByTicker).forEach(ticker => {
     
     // Print ticker header with color
     console.log(chalk.bold.blue(`${ticker} (${results.length} opportunities)`));
-    console.log(chalk.bold("Current | Strike | Long Strike | Exp Date | D2Exp | Net Credit | Width % | ROI | Annual ROI"));
+    console.log(chalk.bold("Current | Strike | Long Strike | Exp Date | D2Exp | Net Credit | Change % | ROI | Annual ROI"));
     console.log(chalk.gray("-".repeat(100)));
     
     // Print results for this ticker
@@ -109,7 +109,7 @@ Object.keys(resultsByTicker).forEach(ticker => {
             `${result.expDateStr.padEnd(8)} | ` +
             `${result.daysToExpiration.toString().padEnd(5)} | ` +
             `${chalk.green(result.bid.toFixed(4).padEnd(9))} | ` +
-            `${((result.spreadWidthPercent || 0) * 100).toFixed(1).padEnd(6)}% | ` +
+            `${chalk.magenta(result.percentageFromStrike.toFixed(1).padEnd(6))}% | ` +
             `${chalk.yellow(result.ROI.toFixed(2) + '%').padEnd(6)} | ` +
             `${chalk.cyan((result.annualizedROI || 0).toFixed(2))}%`
         );

@@ -491,7 +491,8 @@ export const evaluateCallCreditSpreadPerformance = (
       // Calculate annualized ROI using compound interest formula
       // Formula: (1 + r)^(365/t) - 1, where r is the ROI as a decimal and t is days to expiration
       const roiDecimal = roi / 100; // Convert percentage to decimal
-      const annualizedROI = (Math.pow(1 + roiDecimal, 365 / daysToExpiration) - 1) * 100;
+      const daysToCollateralRelease = daysToExpiration + 2;
+      const annualizedROI = (Math.pow(1 + roiDecimal, 365 / daysToCollateralRelease) - 1) * 100;
       
       // Skip if annualized ROI is below threshold
       if (annualizedROI < minAnnualizedROI) continue;
