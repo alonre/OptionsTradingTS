@@ -11,7 +11,7 @@ import {OptionAnalysisResult} from "./types";
 
 //Don't show me options with exp date the is more than X days from today
 const MAX_DAYS_TO_EXP = 450
-const CHEERIES_ONLY = false
+const CHEERIES_ONLY = true
 
 console.log('Script is running 🚀🚀🚀')
 const stocksInputData = parsePutParams();
@@ -34,7 +34,7 @@ for(const stockInputRow of stocksInputData ) {
 
     // Optionally filter for cherries and then sort
     putOptionPerformance = (CHEERIES_ONLY ? filterCherries(putOptionPerformance) : putOptionPerformance)
-        .sort((a, b) => b.ROI - a.ROI);
+        .sort((a, b) => b.annualizedROI - a.annualizedROI);
 
     // Group by ticker
     if (!resultsByTicker[symbol]) {
@@ -64,8 +64,8 @@ Object.keys(resultsByTicker).forEach(ticker => {
     
     // Print ticker header with color
     console.log(chalk.bold.blue(`${ticker} (${results.length} opportunities)`));
-    console.log(chalk.bold("Current | Strike |  Exp Date  | D2Exp |  Bid   |   Diff   | ROI (Yearly)"));
-    console.log(chalk.gray("-".repeat(90)));
+    console.log(chalk.bold("Current | Strike |  Exp Date  | D2Exp |  Bid   |   Diff   |  ROI   | Annual ROI"));
+    console.log(chalk.gray("-".repeat(80)));
     
     // Print each option for this ticker
     results.forEach(result => {
@@ -76,7 +76,8 @@ Object.keys(resultsByTicker).forEach(ticker => {
             `${result.daysToExpiration.toString().padStart(5)} | ` +
             `${chalk.green(result.bid.toFixed(2).padStart(6))} | ` +
             `${chalk.magenta((result.percentageFromStrike.toFixed(1) + '%').padStart(8))} | ` +
-            `${chalk.yellow(result.ROI.toFixed(2) + '%')}`
+            `${chalk.yellow(result.ROI.toFixed(2) + '%').padEnd(6)} | ` +
+            `${chalk.cyan((result.annualizedROI || 0).toFixed(2))}%`
         );
     });
 });

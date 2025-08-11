@@ -244,7 +244,7 @@ export const evaluatePutOptionsPerformance = (
     ticker: string,
     expiryGroups: string[]
 ): OptionAnalysisResult[] => {
-  const MIN_ROI_PERCENTAGE = 15; // Minimum ROI threshold
+  const MIN_ANN_ROI_PERCENTAGE = 15; // Minimum ROI threshold
 
   const results = chain.map(chainLink => {
     const optionPremiumBid = safeParseFloat(chainLink.p_Bid);
@@ -252,9 +252,14 @@ export const evaluatePutOptionsPerformance = (
     const expDate = new Date(findExpiryGroupStartingWith(chainLink.expiryDate, expiryGroups));
     const expDateStr = expDate.toISOString().split('T')[0];
     const daysToExpiration = daysUntil(expDate);
+    const daysToCollateralRelease = daysToExpiration + 2; // Add settlement days
     const percentageFromStrike = calculatePercentageChange(strikePrice, currentPrice);
-    // const ROI = calculateOptionsROI(optionPremiumBid, strikePrice, daysToExpiration);
-    const ROI = calculateAPY(strikePrice, optionPremiumBid, daysToExpiration);
+    // Calculate effective ROI (premium / strike price) as a percentage
+    const ROI = (optionPremiumBid / strikePrice) * 100;
+    
+    // Calculate annualized ROI with compounding (same as credit spread)
+    const roiDecimal = optionPremiumBid / strikePrice;
+    const annualizedROI = (Math.pow(1 + roiDecimal, 365 / daysToCollateralRelease) - 1) * 100;
     
     return {
       ticker,
@@ -265,35 +270,73 @@ export const evaluatePutOptionsPerformance = (
       daysToExpiration,
       bid: optionPremiumBid,
       percentageFromStrike,
-      ROI
+      ROI,
+      annualizedROI
     };
-  }).filter(result => result.ROI >= MIN_ROI_PERCENTAGE); // Filter out options with less than minimum ROI
+  }).filter(result => result.annualizedROI >= MIN_ANN_ROI_PERCENTAGE); // Filter out options with less than minimum ROI
 
   return results;
 };
 
-
 /**
  * Filters and returns a subset of put options considered as "cherries".
- * A "cherry" is defined as a put option that has the same expiration date as the previous option in the list,
- * a smaller absolute percentage from strike, and a higher bid value than the previous option.
+ * A "cherry" is defined as a put option that has a higher bid value than the previous option
+ * with the same expiration date, while also having a smaller absolute percentage from strike.
  *
  * @param putOptions Array of put option objects to be filtered.
  * @returns An array of put options that meet the "cherry" criteria.
  */
 export const filterCherries = (putOptions: OptionAnalysisResult[]): OptionAnalysisResult[] => {
-  return putOptions.filter((option, idx) => {
-    if (idx === 0) return false; // Skip the first element as it can't be compared with a previous one.
-
-    const { expDate, percentageFromStrike, bid } = option;
-    const previousOption = putOptions[idx - 1];
-
-    return (
-        expDate === previousOption.expDate &&
-        Math.abs(percentageFromStrike) < Math.abs(previousOption.percentageFromStrike) &&
-        bid > previousOption.bid
-    );
+  // First, sort options by expiration date string and then by strike price
+  const sortedOptions = [...putOptions].sort((a, b) => {
+    if (a.expDateStr === b.expDateStr) {
+      return a.strikePrice - b.strikePrice;
+    }
+    return a.expDateStr.localeCompare(b.expDateStr);
   });
+
+  const cherries: OptionAnalysisResult[] = [];
+  let currentExpGroup: OptionAnalysisResult[] = [];
+  let currentExpDateStr: string | null = null;
+
+  // Group by expiration date string
+  for (const option of sortedOptions) {
+    if (option.expDateStr !== currentExpDateStr) {
+      // Process previous group if exists
+      if (currentExpGroup.length > 0) {
+        // Find cherries in this expiration group
+        for (let i = 1; i < currentExpGroup.length; i++) {
+          const curr = currentExpGroup[i];
+          const prev = currentExpGroup[i - 1];
+          
+          if (Math.abs(curr.percentageFromStrike) < Math.abs(prev.percentageFromStrike) &&
+              curr.bid > prev.bid) {
+            cherries.push(curr);
+          }
+        }
+      }
+      // Start new group
+      currentExpDateStr = option.expDateStr;
+      currentExpGroup = [option];
+    } else {
+      currentExpGroup.push(option);
+    }
+  }
+
+  // Process the last group
+  if (currentExpGroup.length > 0) {
+    for (let i = 1; i < currentExpGroup.length; i++) {
+      const curr = currentExpGroup[i];
+      const prev = currentExpGroup[i - 1];
+      
+      if (Math.abs(curr.percentageFromStrike) < Math.abs(prev.percentageFromStrike) &&
+          curr.bid > prev.bid) {
+        cherries.push(curr);
+      }
+    }
+  }
+
+  return cherries;
 };
 
 
