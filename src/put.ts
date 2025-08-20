@@ -75,8 +75,8 @@ Object.keys(resultsByTicker).forEach(ticker => {
             `${result.expDateStr.padEnd(10)} | ` +
             `${result.daysToExpiration.toString().padStart(5)} | ` +
             `${chalk.green(result.bid.toFixed(2).padStart(6))} | ` +
-            `${chalk.magenta((result.percentageFromStrike.toFixed(1) + '%').padStart(8))} | ` +
-            `${chalk.yellow(result.ROI.toFixed(2) + '%').padEnd(6)} | ` +
+            `${chalk.magenta((result.percentageFromStrike.toFixed(2) + '%').padStart(8))} | ` +
+            `${chalk.yellow(result.ROI.toFixed(2) + '%').padStart(8)} | ` +
             `${chalk.cyan((result.annualizedROI || 0).toFixed(2))}%`
         );
     });
